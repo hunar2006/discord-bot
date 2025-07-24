@@ -143,8 +143,8 @@ async def job_update_task():
 
 # ---- Helper: Send Job Results ----
 async def send_job_results(guild, user_id, keywords, location, days_limit):
-    channel = next((c for c in guild.text_channels if c.permissions_for(guild.me).send_messages), None)
-    if not channel:
+    user = guild.get_member(user_id)
+    if not user:
         return
     keywords = keywords or []
     location = location or ""
@@ -170,10 +170,10 @@ async def send_job_results(guild, user_id, keywords, location, days_limit):
                 ][:5]
                 if not recent_jobs:
                     return
-                msg = f"<@{user_id}>\nTop Recent Job Results:\n"
+                msg = "Top Recent Job Results:\n"
                 for job in recent_jobs:
                     msg += f"• [{job['job_title']}]({job['job_apply_link']}) at **{job['employer_name']}**\n"
-                await channel.send(msg)
+                await user.send(msg)
     except Exception:
         return
 
