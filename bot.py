@@ -1,29 +1,24 @@
 
-import asyncpg
+
+# ---- Imports ----
 import os
+import asyncpg
 import discord
 import aiohttp
 import asyncio
+from dotenv import load_dotenv
+from discord import app_commands
+from datetime import datetime, timedelta, UTC
 
+# ---- Load environment variables ----
+load_dotenv("api.env")
+
+# ---- Globals ----
 PG_DSN = os.environ.get("PG_DSN")
+RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
 db_pool = None
 
-
-@client.tree.command(name="unsubscribe", description="Unsubscribe from job updates and remove your settings")
-async def unsubscribe(interaction: discord.Interaction):
-    gid = interaction.guild.id
-    uid = interaction.user.id
-    async with db_pool.acquire() as conn:
-        await conn.execute('DELETE FROM user_settings WHERE guild_id=$1 AND user_id=$2', gid, uid)
-    await interaction.response.send_message("You have been unsubscribed from job updates.", ephemeral=True)
-        
-
-from dotenv import load_dotenv
-load_dotenv("api.env")
-from discord import app_commands
-
-
-
+# ---- Discord Client ----
 class MyClient(discord.Client):
     def __init__(self):
         super().__init__(intents=discord.Intents.default())
@@ -51,6 +46,15 @@ async def init_db():
         ''')
 
 client = MyClient()
+
+# ---- Slash Commands ----
+@client.tree.command(name="unsubscribe", description="Unsubscribe from job updates and remove your settings")
+async def unsubscribe(interaction: discord.Interaction):
+    gid = interaction.guild.id
+    uid = interaction.user.id
+    async with db_pool.acquire() as conn:
+        await conn.execute('DELETE FROM user_settings WHERE guild_id=$1 AND user_id=$2', gid, uid)
+    await interaction.response.send_message("You have been unsubscribed from job updates.", ephemeral=True)
 
 @client.tree.command(name="ping", description="Check if the bot is alive")
 async def ping(interaction: discord.Interaction):
@@ -91,7 +95,6 @@ async def clearkeywords(interaction: discord.Interaction):
         await conn.execute('UPDATE user_settings SET keywords=NULL WHERE guild_id=$1 AND user_id=$2', gid, uid)
     await interaction.response.send_message("Your keywords have been cleared.", ephemeral=True)
 
-
 @client.tree.command(name="setlocation", description="Set your preferred job location")
 @discord.app_commands.describe(location="City, State or 'Remote'")
 async def setlocation(interaction: discord.Interaction, location: str):
@@ -121,18 +124,7 @@ async def setdays(interaction: discord.Interaction, days: int):
         ''', gid, uid, days)
     await interaction.response.send_message(f"✅ Job posting age filter set to the past {days} day(s).", ephemeral=True)
 
-
-
-
-
-# Load API key from environment variable
-RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
-
-
-from datetime import datetime, timedelta, UTC
-
-
-
+# ---- Background Job Task ----
 async def job_update_task():
     await client.wait_until_ready()
     while not client.is_closed():
@@ -177,7 +169,7 @@ async def job_update_task():
                     continue
         await asyncio.sleep(4 * 24 * 60 * 60)
 
-
+# ---- on_ready Event ----
 @client.event
 async def on_ready():
     print(f"✅ Logged in as {client.user} (ID: {client.user.id})")
@@ -185,6 +177,5 @@ async def on_ready():
         await init_db()
     client.loop.create_task(job_update_task())
 
-
-# Run your bot using the token from environment variable
+# ---- Run Bot ----
 client.run(os.environ.get("DISCORD_TOKEN"))
