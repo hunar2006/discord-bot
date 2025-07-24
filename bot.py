@@ -1,5 +1,9 @@
 
 import asyncpg
+import os
+import discord
+import aiohttp
+import asyncio
 
 PG_DSN = os.environ.get("PG_DSN")
 db_pool = None
@@ -13,10 +17,9 @@ async def unsubscribe(interaction: discord.Interaction):
         await conn.execute('DELETE FROM user_settings WHERE guild_id=$1 AND user_id=$2', gid, uid)
     await interaction.response.send_message("You have been unsubscribed from job updates.", ephemeral=True)
         
-import os
+
 from dotenv import load_dotenv
 load_dotenv("api.env")
-import discord
 from discord import app_commands
 
 
@@ -119,7 +122,7 @@ async def setdays(interaction: discord.Interaction, days: int):
     await interaction.response.send_message(f"✅ Job posting age filter set to the past {days} day(s).", ephemeral=True)
 
 
-import aiohttp
+
 
 
 # Load API key from environment variable
@@ -127,7 +130,7 @@ RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
 
 
 from datetime import datetime, timedelta, UTC
-import asyncio
+
 
 
 async def job_update_task():
