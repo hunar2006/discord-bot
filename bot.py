@@ -25,6 +25,7 @@ class MyClient(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
+        await init_db()
         await self.tree.sync()
 
     async def on_ready(self):
@@ -173,8 +174,6 @@ async def job_update_task():
 @client.event
 async def on_ready():
     print(f"✅ Logged in as {client.user} (ID: {client.user.id})")
-    if db_pool is None:
-        await init_db()
     client.loop.create_task(job_update_task())
 
 # ---- Run Bot ----
