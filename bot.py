@@ -19,9 +19,14 @@ RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
 db_pool = None
 
 # ---- Discord Client ----
+
+# ---- Intents ----
+intents = discord.Intents.default()
+intents.members = True
+
 class MyClient(discord.Client):
     def __init__(self):
-        super().__init__(intents=discord.Intents.default())
+        super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
@@ -143,20 +148,22 @@ async def job_update_task():
 
 # ---- Helper: Send Job Results ----
 async def send_job_results(guild, user_id, keywords, location, days_limit):
-    user = guild.get_member(user_id)
-    if not user:
-        return
-    keywords = keywords or []
-    location = location or ""
-    days_limit = days_limit or 7
-    query_parts = keywords + ([location] if location else [])
-    query = "+".join(query_parts)
-    url = f"https://jsearch.p.rapidapi.com/search?query={query}&page=1&num_pages=1&country=us"
-    headers = {
-        "X-RapidAPI-Key": RAPIDAPI_KEY,
-        "X-RapidAPI-Host": "jsearch.p.rapidapi.com"
-    }
     try:
+        user = guild.get_member(user_id)
+        if user is None:
+            user = await client.fetch_user(user_id)
+        if not user:
+            return
+        keywords = keywords or []
+        location = location or ""
+        days_limit = days_limit or 7
+        query_parts = keywords + ([location] if location else [])
+        query = "+".join(query_parts)
+        url = f"https://jsearch.p.rapidapi.com/search?query={query}&page=1&num_pages=1&country=us"
+        headers = {
+            "X-RapidAPI-Key": RAPIDAPI_KEY,
+            "X-RapidAPI-Host": "jsearch.p.rapidapi.com"
+        }
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers) as response:
                 if response.status != 200:
