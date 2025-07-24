@@ -125,6 +125,7 @@ async def setdays(interaction: discord.Interaction, days: int):
         ''', gid, uid, days)
     await interaction.response.send_message(f"✅ Job posting age filter set to the past {days} day(s).", ephemeral=True)
 
+
 # ---- Background Job Task ----
 async def job_update_task():
     await client.wait_until_ready()
@@ -137,38 +138,58 @@ async def job_update_task():
             async with db_pool.acquire() as conn:
                 rows = await conn.fetch('SELECT user_id, keywords, location, days FROM user_settings WHERE guild_id=$1 AND keywords IS NOT NULL', gid)
             for row in rows:
-                uid = row["user_id"]
-                keywords = row["keywords"] or []
-                location = row["location"] or ""
-                days_limit = row["days"] or 7
-                query_parts = keywords + ([location] if location else [])
-                query = "+".join(query_parts)
-                url = f"https://jsearch.p.rapidapi.com/search?query={query}&page=1&num_pages=1&country=us"
-                headers = {
-                    "X-RapidAPI-Key": RAPIDAPI_KEY,
-                    "X-RapidAPI-Host": "jsearch.p.rapidapi.com"
-                }
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(url, headers=headers) as response:
-                            if response.status != 200:
-                                continue
-                            data = await response.json()
-                            jobs = data.get("data", [])
-                            cutoff = datetime.now(UTC) - timedelta(days=days_limit)
-                            recent_jobs = [
-                                job for job in jobs
-                                if datetime.strptime(job["job_posted_at_datetime_utc"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC) > cutoff
-                            ][:5]
-                            if not recent_jobs:
-                                continue
-                            msg = f"<@{uid}>\nTop Recent Job Results:\n"
-                            for job in recent_jobs:
-                                msg += f"• [{job['job_title']}]({job['job_apply_link']}) at **{job['employer_name']}**\n"
-                            await channel.send(msg)
-                except Exception:
-                    continue
+                await send_job_results(guild, row["user_id"], row["keywords"], row["location"], row["days"])
         await asyncio.sleep(4 * 24 * 60 * 60)
+
+# ---- Helper: Send Job Results ----
+async def send_job_results(guild, user_id, keywords, location, days_limit):
+    channel = next((c for c in guild.text_channels if c.permissions_for(guild.me).send_messages), None)
+    if not channel:
+        return
+    keywords = keywords or []
+    location = location or ""
+    days_limit = days_limit or 7
+    query_parts = keywords + ([location] if location else [])
+    query = "+".join(query_parts)
+    url = f"https://jsearch.p.rapidapi.com/search?query={query}&page=1&num_pages=1&country=us"
+    headers = {
+        "X-RapidAPI-Key": RAPIDAPI_KEY,
+        "X-RapidAPI-Host": "jsearch.p.rapidapi.com"
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status != 200:
+                    return
+                data = await response.json()
+                jobs = data.get("data", [])
+                cutoff = datetime.now(UTC) - timedelta(days=days_limit)
+                recent_jobs = [
+                    job for job in jobs
+                    if datetime.strptime(job["job_posted_at_datetime_utc"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC) > cutoff
+                ][:5]
+                if not recent_jobs:
+                    return
+                msg = f"<@{user_id}>\nTop Recent Job Results:\n"
+                for job in recent_jobs:
+                    msg += f"• [{job['job_title']}]({job['job_apply_link']}) at **{job['employer_name']}**\n"
+                await channel.send(msg)
+    except Exception:
+        return
+
+# ---- Slash Command: searchnow ----
+@client.tree.command(name="searchnow", description="Get your latest job results now!")
+async def searchnow(interaction: discord.Interaction):
+    gid = interaction.guild.id
+    uid = interaction.user.id
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow('SELECT keywords, location, days FROM user_settings WHERE guild_id=$1 AND user_id=$2', gid, uid)
+    if not row or not row["keywords"]:
+        await interaction.response.send_message("You haven't set any keywords yet. Use /setkeywords first.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    await send_job_results(interaction.guild, uid, row["keywords"], row["location"], row["days"])
+    await interaction.followup.send("Done! Check the channel for your job results.", ephemeral=True)
 
 # ---- on_ready Event ----
 @client.event
