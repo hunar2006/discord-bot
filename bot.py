@@ -106,14 +106,35 @@ async def clearkeywords(interaction: discord.Interaction):
 async def setlocation(interaction: discord.Interaction, location: str):
     gid = interaction.guild.id
     uid = interaction.user.id
+    # Only take the first argument (before any comma or space)
+    loc = location.split(",")[0].split()[0].strip()
     async with db_pool.acquire() as conn:
         await conn.execute('''
             INSERT INTO user_settings (guild_id, user_id, location)
             VALUES ($1, $2, $3)
             ON CONFLICT (guild_id, user_id) DO UPDATE SET location = $3
-        ''', gid, uid, location.strip())
-    await interaction.response.send_message(f"📍 Location saved: **{location}**", ephemeral=True)
+        ''', gid, uid, loc)
+    await interaction.response.send_message(f"📍 Location saved: **{loc}**", ephemeral=True)
 
+@client.tree.command(name="clearlocation", description="Clear your saved location")
+async def clearlocation(interaction: discord.Interaction):
+    gid = interaction.guild.id
+    uid = interaction.user.id
+    async with db_pool.acquire() as conn:
+        await conn.execute('UPDATE user_settings SET location=NULL WHERE guild_id=$1 AND user_id=$2', gid, uid)
+    await interaction.response.send_message("Your location has been cleared.", ephemeral=True)
+
+@client.tree.command(name="showlocation", description="Show your currently saved location")
+async def showlocation(interaction: discord.Interaction):
+    gid = interaction.guild.id
+    uid = interaction.user.id
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow('SELECT location FROM user_settings WHERE guild_id=$1 AND user_id=$2', gid, uid)
+    if not row or not row["location"]:
+        await interaction.response.send_message("� You haven't set a location yet.", ephemeral=True)
+        return
+    location = row["location"]
+    await interaction.response.send_message(f"Your saved location: **{location}**", ephemeral=True)
 @client.tree.command(name="setdays", description="Set how many recent days of job postings to search")
 @app_commands.describe(days="Number of recent days (e.g. 7 for past week)")
 async def setdays(interaction: discord.Interaction, days: int):
