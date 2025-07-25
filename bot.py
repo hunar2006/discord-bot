@@ -188,10 +188,20 @@ async def send_job_results(guild, user_id, keywords, location, days_limit):
                     return False
                 jobs = data.get("data", [])
                 cutoff = datetime.now(UTC) - timedelta(days=days_limit)
-                recent_jobs = [
-                    job for job in jobs
-                    if datetime.strptime(job["job_posted_at_datetime_utc"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC) > cutoff
-                ][:5]
+                recent_jobs = []
+                for job in jobs:
+                    posted_at = job.get("job_posted_at_datetime_utc")
+                    if not posted_at:
+                        continue
+                    try:
+                        posted_dt = datetime.strptime(posted_at, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC)
+                    except Exception as e:
+                        print(f"[ERROR] Invalid date format for job: {posted_at} ({e})")
+                        continue
+                    if posted_dt > cutoff:
+                        recent_jobs.append(job)
+                    if len(recent_jobs) >= 5:
+                        break
                 if not recent_jobs:
                     print(f"[INFO] No recent jobs found for user {user_id}")
                     return True
