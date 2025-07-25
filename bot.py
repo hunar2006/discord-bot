@@ -151,9 +151,14 @@ async def send_job_results(guild, user_id, keywords, location, days_limit):
     try:
         user = guild.get_member(user_id)
         if user is None:
-            user = await client.fetch_user(user_id)
+            try:
+                user = await client.fetch_user(user_id)
+            except Exception as e:
+                print(f"[ERROR] Could not fetch user {user_id}: {e}")
+                return False
         if not user:
-            return
+            print(f"[ERROR] User {user_id} not found in guild {guild.id}")
+            return False
         keywords = keywords or []
         location = location or ""
         days_limit = days_limit or 7
@@ -167,8 +172,20 @@ async def send_job_results(guild, user_id, keywords, location, days_limit):
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers) as response:
                 if response.status != 200:
-                    return
-                data = await response.json()
+                    print(f"[ERROR] API returned status {response.status} for user {user_id}")
+                    try:
+                        text = await response.text()
+                        print(f"[ERROR] API response: {text[:500]}")
+                    except Exception:
+                        pass
+                    return False
+                try:
+                    data = await response.json()
+                except Exception as e:
+                    print(f"[ERROR] Failed to parse JSON for user {user_id}: {e}")
+                    text = await response.text()
+                    print(f"[ERROR] API response (non-JSON): {text[:500]}")
+                    return False
                 jobs = data.get("data", [])
                 cutoff = datetime.now(UTC) - timedelta(days=days_limit)
                 recent_jobs = [
@@ -176,13 +193,23 @@ async def send_job_results(guild, user_id, keywords, location, days_limit):
                     if datetime.strptime(job["job_posted_at_datetime_utc"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC) > cutoff
                 ][:5]
                 if not recent_jobs:
-                    return
+                    print(f"[INFO] No recent jobs found for user {user_id}")
+                    return True
                 msg = "Top Recent Job Results:\n"
                 for job in recent_jobs:
                     msg += f"• [{job['job_title']}]({job['job_apply_link']}) at **{job['employer_name']}**\n"
-                await user.send(msg)
-    except Exception:
-        return
+                try:
+                    await user.send(msg)
+                except discord.Forbidden:
+                    print(f"[ERROR] Cannot DM user {user_id} (forbidden)")
+                    return False
+                except Exception as e:
+                    print(f"[ERROR] Failed to DM user {user_id}: {e}")
+                    return False
+        return True
+    except Exception as e:
+        print(f"[ERROR] Unexpected error in send_job_results for user {user_id}: {e}")
+        return False
 
 # ---- Slash Command: searchnow ----
 @client.tree.command(name="searchnow", description="Get your latest job results now!")
@@ -195,8 +222,11 @@ async def searchnow(interaction: discord.Interaction):
         await interaction.response.send_message("You haven't set any keywords yet. Use /setkeywords first.", ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
-    await send_job_results(interaction.guild, uid, row["keywords"], row["location"], row["days"])
-    await interaction.followup.send("Done! Check the channel for your job results.", ephemeral=True)
+    success = await send_job_results(interaction.guild, uid, row["keywords"], row["location"], row["days"])
+    if success:
+        await interaction.followup.send("Done! Check your DMs for your job results.", ephemeral=True)
+    else:
+        await interaction.followup.send("Sorry, I couldn't DM you your job results. Please check your DM privacy settings or try again later.", ephemeral=True)
 
 # ---- on_ready Event ----
 @client.event
