@@ -47,6 +47,7 @@ async def init_db():
                 keywords TEXT[],
                 location TEXT,
                 days INT,
+                channel_id BIGINT,
                 PRIMARY KEY (guild_id, user_id)
             )
         ''')
@@ -138,8 +139,14 @@ async def showlocation(interaction: discord.Interaction):
 @client.tree.command(name="setdays", description="Set how many recent days of job postings to search")
 @app_commands.describe(days="Number of recent days (e.g. 7 for past week)")
 async def setdays(interaction: discord.Interaction, days: int):
-    if days < 1:
-        await interaction.response.send_message("❌ Days must be at least 1.", ephemeral=True)
+    # Ensure days is always an integer
+    try:
+        days_int = int(days)
+    except Exception:
+        await interaction.response.send_message("❌ Please enter a valid integer for days.", ephemeral=True)
+        return
+    if days_int < 4:
+        await interaction.response.send_message("❌ Days must be at least 4.", ephemeral=True)
         return
     gid = interaction.guild.id
     uid = interaction.user.id
@@ -148,8 +155,8 @@ async def setdays(interaction: discord.Interaction, days: int):
             INSERT INTO user_settings (guild_id, user_id, days)
             VALUES ($1, $2, $3)
             ON CONFLICT (guild_id, user_id) DO UPDATE SET days = $3
-        ''', gid, uid, days)
-    await interaction.response.send_message(f"✅ Job posting age filter set to the past {days} day(s).", ephemeral=True)
+        ''', gid, uid, days_int)
+    await interaction.response.send_message(f"✅ Job posting age filter set to the past {days_int} day(s).", ephemeral=True)
 
 
 # ---- Background Job Task ----
@@ -170,15 +177,15 @@ async def job_update_task():
 # ---- Helper: Send Job Results ----
 async def send_job_results(guild, user_id, keywords, location, days_limit):
     try:
-        user = guild.get_member(user_id)
-        if user is None:
-            try:
-                user = await client.fetch_user(user_id)
-            except Exception as e:
-                print(f"[ERROR] Could not fetch user {user_id}: {e}")
-                return False
-        if not user:
-            print(f"[ERROR] User {user_id} not found in guild {guild.id}")
+        # Fetch channel_id from DB
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow('SELECT channel_id FROM user_settings WHERE guild_id=$1 AND user_id=$2', guild.id, user_id)
+        channel_id = row["channel_id"] if row else None
+        channel = None
+        if channel_id:
+            channel = guild.get_channel(channel_id)
+        if not channel or not channel.permissions_for(guild.me).send_messages:
+            print(f"[ERROR] No valid channel set for user {user_id} in guild {guild.id}")
             return False
         keywords = keywords or []
         location = location or ""
@@ -230,12 +237,12 @@ async def send_job_results(guild, user_id, keywords, location, days_limit):
                 for job in recent_jobs:
                     msg += f"• [{job['job_title']}]({job['job_apply_link']}) at **{job['employer_name']}**\n"
                 try:
-                    await user.send(msg)
+                    await channel.send(f"<@{user_id}> {msg}")
                 except discord.Forbidden:
-                    print(f"[ERROR] Cannot DM user {user_id} (forbidden)")
+                    print(f"[ERROR] Cannot send message in channel {channel.id} for user {user_id} (forbidden)")
                     return False
                 except Exception as e:
-                    print(f"[ERROR] Failed to DM user {user_id}: {e}")
+                    print(f"[ERROR] Failed to send message in channel {channel.id} for user {user_id}: {e}")
                     return False
         return True
     except Exception as e:
@@ -248,16 +255,61 @@ async def searchnow(interaction: discord.Interaction):
     gid = interaction.guild.id
     uid = interaction.user.id
     async with db_pool.acquire() as conn:
-        row = await conn.fetchrow('SELECT keywords, location, days FROM user_settings WHERE guild_id=$1 AND user_id=$2', gid, uid)
+        row = await conn.fetchrow('SELECT keywords, location, days, channel_id FROM user_settings WHERE guild_id=$1 AND user_id=$2', gid, uid)
     if not row or not row["keywords"]:
         await interaction.response.send_message("You haven't set any keywords yet. Use /setkeywords first.", ephemeral=True)
+        return
+    if not row["channel_id"]:
+        await interaction.response.send_message("You haven't set a channel to receive job results. Use /setchannel first.", ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
     success = await send_job_results(interaction.guild, uid, row["keywords"], row["location"], row["days"])
     if success:
-        await interaction.followup.send("Done! Check your DMs for your job results.", ephemeral=True)
+        await interaction.followup.send("Done! Your job results have been posted in your selected channel.", ephemeral=True)
     else:
-        await interaction.followup.send("Sorry, I couldn't DM you your job results. Please check your DM privacy settings or try again later.", ephemeral=True)
+        await interaction.followup.send("Sorry, I couldn't send your job results in the selected channel. Please check my permissions or try again later.", ephemeral=True)
+# ---- Slash Command: setchannel ----
+@client.tree.command(name="setchannel", description="Set the channel where you want to receive job results")
+@discord.app_commands.describe(channel="Select a text channel")
+async def setchannel(interaction: discord.Interaction, channel: discord.TextChannel):
+    gid = interaction.guild.id
+    uid = interaction.user.id
+    # Check bot permissions
+    if not channel.permissions_for(interaction.guild.me).send_messages:
+        await interaction.response.send_message("❌ I don't have permission to send messages in that channel.", ephemeral=True)
+        return
+    async with db_pool.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO user_settings (guild_id, user_id, channel_id)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (guild_id, user_id) DO UPDATE SET channel_id = $3
+        ''', gid, uid, channel.id)
+    await interaction.response.send_message(f"✅ Channel set! You'll receive job results in {channel.mention}.", ephemeral=True)
+
+# ---- Slash Command: clearchannel ----
+@client.tree.command(name="clearchannel", description="Clear your selected job results channel")
+async def clearchannel(interaction: discord.Interaction):
+    gid = interaction.guild.id
+    uid = interaction.user.id
+    async with db_pool.acquire() as conn:
+        await conn.execute('UPDATE user_settings SET channel_id=NULL WHERE guild_id=$1 AND user_id=$2', gid, uid)
+    await interaction.response.send_message("Your job results channel has been cleared.", ephemeral=True)
+
+# ---- Slash Command: showchannel ----
+@client.tree.command(name="showchannel", description="Show your currently selected job results channel")
+async def showchannel(interaction: discord.Interaction):
+    gid = interaction.guild.id
+    uid = interaction.user.id
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow('SELECT channel_id FROM user_settings WHERE guild_id=$1 AND user_id=$2', gid, uid)
+    if not row or not row["channel_id"]:
+        await interaction.response.send_message("You haven't set a channel yet. Use /setchannel to pick one.", ephemeral=True)
+        return
+    channel = interaction.guild.get_channel(row["channel_id"])
+    if not channel:
+        await interaction.response.send_message("The previously set channel no longer exists. Please set a new one with /setchannel.", ephemeral=True)
+        return
+    await interaction.response.send_message(f"Your job results will be sent to: {channel.mention}", ephemeral=True)
 
 # ---- on_ready Event ----
 @client.event
