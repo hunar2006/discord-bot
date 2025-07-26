@@ -69,7 +69,7 @@ async def ping(interaction: discord.Interaction):
     await interaction.response.send_message("Pong!", ephemeral=True)
 
 @client.tree.command(name="setkeywords", description="Set keywords to track (comma-separated)")
-@discord.app_commands.describe(keywords="e.g. internship, remote, summer 2025")
+@discord.app_commands.describe(keywords="Enter keywords separated by commas, e.g. ai, ml, internship")
 async def setkeywords(interaction: discord.Interaction, keywords: str):
     gid = interaction.guild.id
     uid = interaction.user.id
@@ -80,7 +80,8 @@ async def setkeywords(interaction: discord.Interaction, keywords: str):
             VALUES ($1, $2, $3)
             ON CONFLICT (guild_id, user_id) DO UPDATE SET keywords = $3
         ''', gid, uid, keyword_list)
-    msg = "✅ Keywords saved:\n" + "\n".join(f"• {k}" for k in keyword_list)
+    msg = ("✅ Keywords saved (comma-separated, e.g. ai, ml, internship):\n" +
+           "\n".join(f"• {k}" for k in keyword_list))
     await interaction.response.send_message(msg, ephemeral=True)
 
 @client.tree.command(name="showkeywords", description="Show your currently saved keywords")
@@ -137,27 +138,6 @@ async def showlocation(interaction: discord.Interaction):
         return
     location = row["location"]
     await interaction.response.send_message(f"Your saved location: **{location}**", ephemeral=True)
-@client.tree.command(name="setdays", description="Set how many recent days of job postings to search")
-@app_commands.describe(days="Number of recent days (e.g. 7 for past week)")
-async def setdays(interaction: discord.Interaction, days: int):
-    # Ensure days is always an integer
-    try:
-        days_int = int(days)
-    except Exception:
-        await interaction.response.send_message("❌ Please enter a valid integer for days.", ephemeral=True)
-        return
-    if days_int < 4:
-        await interaction.response.send_message("❌ Days must be at least 4.", ephemeral=True)
-        return
-    gid = interaction.guild.id
-    uid = interaction.user.id
-    async with db_pool.acquire() as conn:
-        await conn.execute('''
-            INSERT INTO user_settings (guild_id, user_id, days)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (guild_id, user_id) DO UPDATE SET days = $3
-        ''', gid, uid, days_int)
-    await interaction.response.send_message(f"✅ Job posting age filter set to the past {days_int} day(s).", ephemeral=True)
 
 
 # ---- Background Job Task ----
@@ -170,13 +150,13 @@ async def job_update_task():
                 continue
             gid = guild.id
             async with db_pool.acquire() as conn:
-                rows = await conn.fetch('SELECT user_id, keywords, location, days FROM user_settings WHERE guild_id=$1 AND keywords IS NOT NULL AND updates_enabled=TRUE', gid)
+                rows = await conn.fetch('SELECT user_id, keywords, location FROM user_settings WHERE guild_id=$1 AND keywords IS NOT NULL AND updates_enabled=TRUE', gid)
             for row in rows:
-                await send_job_results(guild, row["user_id"], row["keywords"], row["location"], row["days"])
+                await send_job_results(guild, row["user_id"], row["keywords"], row["location"], 4)
         await asyncio.sleep(4 * 24 * 60 * 60)
 
 # ---- Helper: Send Job Results ----
-async def send_job_results(guild, user_id, keywords, location, days_limit):
+async def send_job_results(guild, user_id, keywords, location, days_limit=4):
     try:
         # Fetch channel_id from DB
         async with db_pool.acquire() as conn:
@@ -190,7 +170,7 @@ async def send_job_results(guild, user_id, keywords, location, days_limit):
             return False
         keywords = keywords or []
         location = location or ""
-        days_limit = days_limit or 7
+        days_limit = 4
         query_parts = keywords + ([location] if location else [])
         query = "+".join(query_parts)
         url = f"https://jsearch.p.rapidapi.com/search?query={query}&page=1&num_pages=1&country=us"
@@ -257,23 +237,33 @@ async def searchnow(interaction: discord.Interaction):
     gid = interaction.guild.id
     uid = interaction.user.id
     async with db_pool.acquire() as conn:
-        row = await conn.fetchrow('SELECT keywords, location, days, channel_id, updates_enabled FROM user_settings WHERE guild_id=$1 AND user_id=$2', gid, uid)
+        row = await conn.fetchrow('SELECT keywords, location, channel_id, updates_enabled FROM user_settings WHERE guild_id=$1 AND user_id=$2', gid, uid)
     if not row or not row["keywords"]:
-        await interaction.response.send_message("You haven't set any keywords yet. Use /setkeywords first.", ephemeral=True)
+        await interaction.response.send_message(
+            "You haven't set any keywords yet. Use /setkeywords first.\n\n"
+            "Format: Enter keywords separated by commas, e.g. ai, ml, internship",
+            ephemeral=True)
         return
     if not row["channel_id"]:
-        await interaction.response.send_message("You haven't set a channel to receive job results. Use /setchannel first.", ephemeral=True)
+        await interaction.response.send_message(
+            "You haven't set a channel to receive job results. Use /setchannel first.", ephemeral=True)
         return
     if row["updates_enabled"]:
-        await interaction.response.send_message("You have already started job updates. You will receive results every 4 days automatically.", ephemeral=True)
+        await interaction.response.send_message(
+            "You have already started job updates. You will receive results every 4 days automatically.\n"
+            "Only jobs posted within the last 4 days will be sent.",
+            ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
-    success = await send_job_results(interaction.guild, uid, row["keywords"], row["location"], row["days"])
+    success = await send_job_results(interaction.guild, uid, row["keywords"], row["location"], 4)
     if success:
         # Enable periodic updates for this user
         async with db_pool.acquire() as conn:
             await conn.execute('UPDATE user_settings SET updates_enabled=TRUE WHERE guild_id=$1 AND user_id=$2', gid, uid)
-        await interaction.followup.send("Done! You will now receive job results in your selected channel every 4 days.", ephemeral=True)
+        await interaction.followup.send(
+            "Done! You will now receive job results in your selected channel every 4 days.\n"
+            "Only jobs posted within the last 4 days will be sent.",
+            ephemeral=True)
     else:
         await interaction.followup.send("Sorry, I couldn't send your job results in the selected channel. Please check my permissions or try again later.", ephemeral=True)
 # ---- Slash Command: setchannel ----
