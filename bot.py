@@ -48,6 +48,7 @@ async def init_db():
                 location TEXT,
                 days INT,
                 s_id BIGINT,
+                updates_enabled BOOLEAN DEFAULT FALSE,
                 PRIMARY KEY (guild_id, user_id)
             )
         ''')
@@ -169,7 +170,7 @@ async def job_update_task():
                 continue
             gid = guild.id
             async with db_pool.acquire() as conn:
-                rows = await conn.fetch('SELECT user_id, keywords, location, days FROM user_settings WHERE guild_id=$1 AND keywords IS NOT NULL', gid)
+                rows = await conn.fetch('SELECT user_id, keywords, location, days FROM user_settings WHERE guild_id=$1 AND keywords IS NOT NULL AND updates_enabled=TRUE', gid)
             for row in rows:
                 await send_job_results(guild, row["user_id"], row["keywords"], row["location"], row["days"])
         await asyncio.sleep(4 * 24 * 60 * 60)
@@ -256,17 +257,23 @@ async def searchnow(interaction: discord.Interaction):
     gid = interaction.guild.id
     uid = interaction.user.id
     async with db_pool.acquire() as conn:
-        row = await conn.fetchrow('SELECT keywords, location, days, channel_id FROM user_settings WHERE guild_id=$1 AND user_id=$2', gid, uid)
+        row = await conn.fetchrow('SELECT keywords, location, days, channel_id, updates_enabled FROM user_settings WHERE guild_id=$1 AND user_id=$2', gid, uid)
     if not row or not row["keywords"]:
         await interaction.response.send_message("You haven't set any keywords yet. Use /setkeywords first.", ephemeral=True)
         return
     if not row["channel_id"]:
         await interaction.response.send_message("You haven't set a channel to receive job results. Use /setchannel first.", ephemeral=True)
         return
+    if row["updates_enabled"]:
+        await interaction.response.send_message("You have already started job updates. You will receive results every 4 days automatically.", ephemeral=True)
+        return
     await interaction.response.defer(ephemeral=True)
     success = await send_job_results(interaction.guild, uid, row["keywords"], row["location"], row["days"])
     if success:
-        await interaction.followup.send("Done! Your job results have been posted in your selected channel.", ephemeral=True)
+        # Enable periodic updates for this user
+        async with db_pool.acquire() as conn:
+            await conn.execute('UPDATE user_settings SET updates_enabled=TRUE WHERE guild_id=$1 AND user_id=$2', gid, uid)
+        await interaction.followup.send("Done! You will now receive job results in your selected channel every 4 days.", ephemeral=True)
     else:
         await interaction.followup.send("Sorry, I couldn't send your job results in the selected channel. Please check my permissions or try again later.", ephemeral=True)
 # ---- Slash Command: setchannel ----
