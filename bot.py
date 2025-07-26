@@ -47,7 +47,7 @@ async def init_db():
                 keywords TEXT[],
                 location TEXT,
                 days INT,
-                channel_id BIGINT,
+                s_id BIGINT,
                 PRIMARY KEY (guild_id, user_id)
             )
         ''')
@@ -228,14 +228,15 @@ async def send_job_results(guild, user_id, keywords, location, days_limit):
                         continue
                     if posted_dt > cutoff:
                         recent_jobs.append(job)
-                    if len(recent_jobs) >= 5:
+                    if len(recent_jobs) >= 20:
                         break
                 if not recent_jobs:
                     print(f"[INFO] No recent jobs found for user {user_id}")
                     return True
                 msg = "Top Recent Job Results:\n"
                 for job in recent_jobs:
-                    msg += f"• [{job['job_title']}]({job['job_apply_link']}) at **{job['employer_name']}**\n"
+                    # Use plain links in < > to suppress Discord embeds
+                    msg += f"• {job['job_title']} at {job['employer_name']}: <{job['job_apply_link']}>\n"
                 try:
                     await channel.send(f"<@{user_id}> {msg}")
                 except discord.Forbidden:
