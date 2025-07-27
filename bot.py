@@ -74,7 +74,7 @@ async def init_db():
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS user_settings (
                 user_id BIGINT PRIMARY KEY,
-                keywords TEXT[],
+                keywords TEXT,
                 location TEXT,
                 country TEXT,
                 days INT,
@@ -196,7 +196,9 @@ async def ping(interaction: discord.Interaction):
 @user_limit_check
 async def setkeywords(interaction: discord.Interaction, keywords: str):
     uid = interaction.user.id
-    keyword_list = [k.strip() for k in keywords.split(",")]
+    # Clean and normalize the input string
+    keyword_list = [k.strip() for k in keywords.split(",") if k.strip()]
+    keywords_str = ", ".join(keyword_list)
     async with db_pool.acquire() as conn:
         # Check if user is already registered and if they are currently subscribed
         row = await conn.fetchrow('SELECT subscribed FROM user_settings WHERE user_id=$1', uid)
@@ -209,7 +211,7 @@ async def setkeywords(interaction: discord.Interaction, keywords: str):
             INSERT INTO user_settings (user_id, keywords, subscribed)
             VALUES ($1, $2, TRUE)
             ON CONFLICT (user_id) DO UPDATE SET keywords = $2, subscribed = TRUE
-        ''', uid, keyword_list)
+        ''', uid, keywords_str)
     msg = ("✅ Keywords saved (comma-separated, e.g. ai, ml, internship):\n" +
            "\n".join(f"• {k}" for k in keyword_list))
     await interaction.response.send_message(msg, ephemeral=True)
@@ -223,8 +225,9 @@ async def showkeywords(interaction: discord.Interaction):
     if not row or not row["keywords"]:
         await interaction.response.send_message("📭 You haven't set any keywords yet.", ephemeral=True)
         return
-    keywords = row["keywords"]
-    await interaction.response.send_message("Your saved keywords:\n• " + "\n• ".join(keywords), ephemeral=True)
+    keywords_str = row["keywords"]
+    keyword_list = [k.strip() for k in keywords_str.split(",") if k.strip()]
+    await interaction.response.send_message("Your saved keywords:\n• " + "\n• ".join(keyword_list), ephemeral=True)
 
 @client.tree.command(name="clearkeywords", description="Clear your saved keywords")
 @user_limit_check
