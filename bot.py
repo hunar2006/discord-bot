@@ -42,8 +42,7 @@ async def init_db():
     async with db_pool.acquire() as conn:
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS user_settings (
-                guild_id BIGINT,
-                user_id BIGINT,
+                user_id BIGINT PRIMARY KEY,
                 keywords TEXT[],
                 location TEXT,
                 country TEXT,
@@ -51,7 +50,7 @@ async def init_db():
                 s_id BIGINT,
                 updates_enabled BOOLEAN DEFAULT FALSE,
                 last_sent TEXT,
-                PRIMARY KEY (guild_id, user_id)
+                channel_id BIGINT
             )
         ''')
 client = MyClient()
@@ -121,23 +120,21 @@ async def setcountry(interaction: discord.Interaction, country: str):
         await interaction.response.send_message(
             f"❌ Invalid country code. Please choose from the following:\n{country_list}", ephemeral=True)
         return
-    gid = interaction.guild.id
     uid = interaction.user.id
     async with db_pool.acquire() as conn:
         await conn.execute('''
-            INSERT INTO user_settings (guild_id, user_id, country)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (guild_id, user_id) DO UPDATE SET country = $3
-        ''', gid, uid, country)
+            INSERT INTO user_settings (user_id, country)
+            VALUES ($1, $2)
+            ON CONFLICT (user_id) DO UPDATE SET country = $2
+        ''', uid, country)
     await interaction.response.send_message(f"🌍 Country set to: **{COUNTRY_CHOICES[country]}** ({country})", ephemeral=True)
 
 # ---- Slash Command: showcountry ----
 @client.tree.command(name="showcountry", description="Show your currently selected country for job search")
 async def showcountry(interaction: discord.Interaction):
-    gid = interaction.guild.id
     uid = interaction.user.id
     async with db_pool.acquire() as conn:
-        row = await conn.fetchrow('SELECT country FROM user_settings WHERE guild_id=$1 AND user_id=$2', gid, uid)
+        row = await conn.fetchrow('SELECT country FROM user_settings WHERE user_id=$1', uid)
     if not row or not row["country"]:
         await interaction.response.send_message("You haven't set a country yet. Use /setcountry to pick one.", ephemeral=True)
         return
@@ -149,10 +146,9 @@ async def showcountry(interaction: discord.Interaction):
 # ---- Slash Commands ----
 @client.tree.command(name="unsubscribe", description="Unsubscribe from job updates and remove your settings")
 async def unsubscribe(interaction: discord.Interaction):
-    gid = interaction.guild.id
     uid = interaction.user.id
     async with db_pool.acquire() as conn:
-        await conn.execute('DELETE FROM user_settings WHERE guild_id=$1 AND user_id=$2', gid, uid)
+        await conn.execute('DELETE FROM user_settings WHERE user_id=$1', uid)
     await interaction.response.send_message("You have been unsubscribed from job updates.", ephemeral=True)
 
 @client.tree.command(name="ping", description="Check if the bot is alive")
@@ -162,32 +158,30 @@ async def ping(interaction: discord.Interaction):
 @client.tree.command(name="setkeywords", description="Set keywords to track (comma-separated)")
 @discord.app_commands.describe(keywords="Enter keywords separated by commas, e.g. ai, ml, internship")
 async def setkeywords(interaction: discord.Interaction, keywords: str):
-    gid = interaction.guild.id
     uid = interaction.user.id
     keyword_list = [k.strip() for k in keywords.split(",")]
     async with db_pool.acquire() as conn:
         # Check if user is already registered
-        exists = await conn.fetchval('SELECT 1 FROM user_settings WHERE guild_id=$1 AND user_id=$2', gid, uid)
+        exists = await conn.fetchval('SELECT 1 FROM user_settings WHERE user_id=$1', uid)
         # Count total unique users
         user_count = await conn.fetchval('SELECT COUNT(*) FROM user_settings')
         if not exists and user_count >= 18:
             await interaction.response.send_message("❌ Sorry, the bot has reached the maximum number of users (18). Please try again later or ask someone to unsubscribe.", ephemeral=True)
             return
         await conn.execute('''
-            INSERT INTO user_settings (guild_id, user_id, keywords)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (guild_id, user_id) DO UPDATE SET keywords = $3
-        ''', gid, uid, keyword_list)
+            INSERT INTO user_settings (user_id, keywords)
+            VALUES ($1, $2)
+            ON CONFLICT (user_id) DO UPDATE SET keywords = $2
+        ''', uid, keyword_list)
     msg = ("✅ Keywords saved (comma-separated, e.g. ai, ml, internship):\n" +
            "\n".join(f"• {k}" for k in keyword_list))
     await interaction.response.send_message(msg, ephemeral=True)
 
 @client.tree.command(name="showkeywords", description="Show your currently saved keywords")
 async def showkeywords(interaction: discord.Interaction):
-    gid = interaction.guild.id
     uid = interaction.user.id
     async with db_pool.acquire() as conn:
-        row = await conn.fetchrow('SELECT keywords FROM user_settings WHERE guild_id=$1 AND user_id=$2', gid, uid)
+        row = await conn.fetchrow('SELECT keywords FROM user_settings WHERE user_id=$1', uid)
     if not row or not row["keywords"]:
         await interaction.response.send_message("📭 You haven't set any keywords yet.", ephemeral=True)
         return
@@ -196,41 +190,37 @@ async def showkeywords(interaction: discord.Interaction):
 
 @client.tree.command(name="clearkeywords", description="Clear your saved keywords")
 async def clearkeywords(interaction: discord.Interaction):
-    gid = interaction.guild.id
     uid = interaction.user.id
     async with db_pool.acquire() as conn:
-        await conn.execute('UPDATE user_settings SET keywords=NULL WHERE guild_id=$1 AND user_id=$2', gid, uid)
+        await conn.execute('UPDATE user_settings SET keywords=NULL WHERE user_id=$1', uid)
     await interaction.response.send_message("Your keywords have been cleared.", ephemeral=True)
 
 @client.tree.command(name="setlocation", description="Set your preferred job location")
 @discord.app_commands.describe(location="City, State or 'Remote'")
 async def setlocation(interaction: discord.Interaction, location: str):
-    gid = interaction.guild.id
     uid = interaction.user.id
     # Only take the first argument (before any comma or space)
     loc = location.split(",")[0].split()[0].strip()
     async with db_pool.acquire() as conn:
         await conn.execute('''
-            INSERT INTO user_settings (guild_id, user_id, location)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (guild_id, user_id) DO UPDATE SET location = $3
-        ''', gid, uid, loc)
+            INSERT INTO user_settings (user_id, location)
+            VALUES ($1, $2)
+            ON CONFLICT (user_id) DO UPDATE SET location = $2
+        ''', uid, loc)
     await interaction.response.send_message(f"📍 Location saved: **{loc}**", ephemeral=True)
 
 @client.tree.command(name="clearlocation", description="Clear your saved location")
 async def clearlocation(interaction: discord.Interaction):
-    gid = interaction.guild.id
     uid = interaction.user.id
     async with db_pool.acquire() as conn:
-        await conn.execute('UPDATE user_settings SET location=NULL WHERE guild_id=$1 AND user_id=$2', gid, uid)
+        await conn.execute('UPDATE user_settings SET location=NULL WHERE user_id=$1', uid)
     await interaction.response.send_message("Your location has been cleared.", ephemeral=True)
 
 @client.tree.command(name="showlocation", description="Show your currently saved location")
 async def showlocation(interaction: discord.Interaction):
-    gid = interaction.guild.id
     uid = interaction.user.id
     async with db_pool.acquire() as conn:
-        row = await conn.fetchrow('SELECT location FROM user_settings WHERE guild_id=$1 AND user_id=$2', gid, uid)
+        row = await conn.fetchrow('SELECT location FROM user_settings WHERE user_id=$1', uid)
     if not row or not row["location"]:
         await interaction.response.send_message("� You haven't set a location yet.", ephemeral=True)
         return
@@ -244,9 +234,8 @@ async def job_update_task():
     while not client.is_closed():
         now = datetime.now(UTC)
         for guild in client.guilds:
-            gid = guild.id
             async with db_pool.acquire() as conn:
-                rows = await conn.fetch('SELECT user_id, keywords, location, last_sent FROM user_settings WHERE guild_id=$1 AND keywords IS NOT NULL AND updates_enabled=TRUE', gid)
+                rows = await conn.fetch('SELECT user_id, keywords, location, last_sent FROM user_settings WHERE keywords IS NOT NULL AND updates_enabled=TRUE')
             for row in rows:
                 last_sent_str = row["last_sent"]
                 last_sent = None
@@ -256,10 +245,28 @@ async def job_update_task():
                     except Exception:
                         last_sent = None
                 if not last_sent or (now - last_sent).total_seconds() >= 4 * 24 * 60 * 60:
-                    success = await send_job_results(guild, row["user_id"], row["keywords"], row["location"], 4)
-                    if success:
-                        async with db_pool.acquire() as conn:
-                            await conn.execute('UPDATE user_settings SET last_sent=$1 WHERE guild_id=$2 AND user_id=$3', now.isoformat(), gid, row["user_id"])
+                    # Find the user's channel and guild
+                    user_id = row["user_id"]
+                    channel_id = None
+                    for g in client.guilds:
+                        member = g.get_member(user_id)
+                        if member:
+                            async with db_pool.acquire() as conn:
+                                ch_row = await conn.fetchrow('SELECT channel_id FROM user_settings WHERE user_id=$1', user_id)
+                            channel_id = ch_row["channel_id"] if ch_row else None
+                            break
+                    if channel_id:
+                        channel = None
+                        for g in client.guilds:
+                            ch = g.get_channel(channel_id)
+                            if ch:
+                                channel = ch
+                                break
+                        if channel:
+                            success = await send_job_results(channel.guild, user_id, row["keywords"], row["location"], 4)
+                            if success:
+                                async with db_pool.acquire() as conn:
+                                    await conn.execute('UPDATE user_settings SET last_sent=$1 WHERE user_id=$2', now.isoformat(), user_id)
         await asyncio.sleep(60 * 10)  # Check every 10 minutes
 
 # ---- Helper: Send Job Results ----
@@ -267,14 +274,19 @@ async def send_job_results(guild, user_id, keywords, location, days_limit=4):
     try:
         # Fetch channel_id and country from DB
         async with db_pool.acquire() as conn:
-            row = await conn.fetchrow('SELECT channel_id, country FROM user_settings WHERE guild_id=$1 AND user_id=$2', guild.id, user_id)
+            row = await conn.fetchrow('SELECT channel_id, country FROM user_settings WHERE user_id=$1', user_id)
         channel_id = row["channel_id"] if row else None
         country = row["country"] if row and row["country"] else "us"
         channel = None
         if channel_id:
-            channel = guild.get_channel(channel_id)
-        if not channel or not channel.permissions_for(guild.me).send_messages:
-            print(f"[ERROR] No valid channel set for user {user_id} in guild {guild.id}")
+            # Find the channel in any guild
+            for g in client.guilds:
+                ch = g.get_channel(channel_id)
+                if ch:
+                    channel = ch
+                    break
+        if not channel or not channel.permissions_for(channel.guild.me).send_messages:
+            print(f"[ERROR] No valid channel set for user {user_id}")
             return False
         keywords = keywords or []
         location = location or ""
@@ -342,10 +354,9 @@ async def send_job_results(guild, user_id, keywords, location, days_limit=4):
 # ---- Slash Command: searchnow ----
 @client.tree.command(name="searchnow", description="Get your latest job results now!")
 async def searchnow(interaction: discord.Interaction):
-    gid = interaction.guild.id
     uid = interaction.user.id
     async with db_pool.acquire() as conn:
-        row = await conn.fetchrow('SELECT keywords, location, channel_id, updates_enabled FROM user_settings WHERE guild_id=$1 AND user_id=$2', gid, uid)
+        row = await conn.fetchrow('SELECT keywords, location, channel_id, updates_enabled FROM user_settings WHERE user_id=$1', uid)
     if not row or not row["keywords"]:
         await interaction.response.send_message(
             "You haven't set any keywords yet. Use /setkeywords first.\n\n"
@@ -363,12 +374,22 @@ async def searchnow(interaction: discord.Interaction):
             ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
-    success = await send_job_results(interaction.guild, uid, row["keywords"], row["location"], 4)
+    # Find the channel in any guild
+    channel = None
+    for g in client.guilds:
+        ch = g.get_channel(row["channel_id"])
+        if ch:
+            channel = ch
+            break
+    if not channel:
+        await interaction.followup.send("Sorry, I couldn't find your selected channel in any server.", ephemeral=True)
+        return
+    success = await send_job_results(channel.guild, uid, row["keywords"], row["location"], 4)
     if success:
         # Enable periodic updates for this user and set last_sent to now
         now = datetime.now(UTC)
         async with db_pool.acquire() as conn:
-            await conn.execute('UPDATE user_settings SET updates_enabled=TRUE, last_sent=$1 WHERE guild_id=$2 AND user_id=$3', now.isoformat(), gid, uid)
+            await conn.execute('UPDATE user_settings SET updates_enabled=TRUE, last_sent=$1 WHERE user_id=$2', now.isoformat(), uid)
         await interaction.followup.send(
             "Done! You will now receive job results in your selected channel every 4 days (from now).\n"
             "Only jobs posted within the last 4 days will be sent.",
@@ -379,7 +400,6 @@ async def searchnow(interaction: discord.Interaction):
 @client.tree.command(name="setchannel", description="Set the channel where you want to receive job results")
 @discord.app_commands.describe(channel="Select a text channel")
 async def setchannel(interaction: discord.Interaction, channel: discord.TextChannel):
-    gid = interaction.guild.id
     uid = interaction.user.id
     # Check bot permissions
     if not channel.permissions_for(interaction.guild.me).send_messages:
@@ -387,32 +407,35 @@ async def setchannel(interaction: discord.Interaction, channel: discord.TextChan
         return
     async with db_pool.acquire() as conn:
         await conn.execute('''
-            INSERT INTO user_settings (guild_id, user_id, channel_id)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (guild_id, user_id) DO UPDATE SET channel_id = $3
-        ''', gid, uid, channel.id)
+            INSERT INTO user_settings (user_id, channel_id)
+            VALUES ($1, $2)
+            ON CONFLICT (user_id) DO UPDATE SET channel_id = $2
+        ''', uid, channel.id)
     await interaction.response.send_message(f"✅ Channel set! You'll receive job results in {channel.mention}.", ephemeral=True)
 
 # ---- Slash Command: clearchannel ----
 @client.tree.command(name="clearchannel", description="Clear your selected job results channel")
 async def clearchannel(interaction: discord.Interaction):
-    gid = interaction.guild.id
     uid = interaction.user.id
     async with db_pool.acquire() as conn:
-        await conn.execute('UPDATE user_settings SET channel_id=NULL WHERE guild_id=$1 AND user_id=$2', gid, uid)
+        await conn.execute('UPDATE user_settings SET channel_id=NULL WHERE user_id=$1', uid)
     await interaction.response.send_message("Your job results channel has been cleared.", ephemeral=True)
 
 # ---- Slash Command: showchannel ----
 @client.tree.command(name="showchannel", description="Show your currently selected job results channel")
 async def showchannel(interaction: discord.Interaction):
-    gid = interaction.guild.id
     uid = interaction.user.id
     async with db_pool.acquire() as conn:
-        row = await conn.fetchrow('SELECT channel_id FROM user_settings WHERE guild_id=$1 AND user_id=$2', gid, uid)
+        row = await conn.fetchrow('SELECT channel_id FROM user_settings WHERE user_id=$1', uid)
     if not row or not row["channel_id"]:
         await interaction.response.send_message("You haven't set a channel yet. Use /setchannel to pick one.", ephemeral=True)
         return
-    channel = interaction.guild.get_channel(row["channel_id"])
+    channel = None
+    for g in client.guilds:
+        ch = g.get_channel(row["channel_id"])
+        if ch:
+            channel = ch
+            break
     if not channel:
         await interaction.response.send_message("The previously set channel no longer exists. Please set a new one with /setchannel.", ephemeral=True)
         return
