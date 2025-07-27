@@ -53,6 +53,7 @@ async def init_db():
                 PRIMARY KEY (guild_id, user_id)
             )
         ''')
+client = MyClient()
 # ---- Supported Countries ----
 COUNTRY_CHOICES = {
     'us': 'United States',
@@ -143,7 +144,6 @@ async def showcountry(interaction: discord.Interaction):
     name = COUNTRY_CHOICES.get(code, code)
     await interaction.response.send_message(f"Your job search country: **{name}** ({code})", ephemeral=True)
 
-client = MyClient()
 
 # ---- Slash Commands ----
 @client.tree.command(name="unsubscribe", description="Unsubscribe from job updates and remove your settings")
