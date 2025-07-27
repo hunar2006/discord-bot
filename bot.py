@@ -1,3 +1,15 @@
+# ---- User Limit Decorator ----
+def user_limit_check(func):
+    async def wrapper(interaction, *args, **kwargs):
+        uid = interaction.user.id
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow('SELECT subscribed FROM user_settings WHERE user_id=$1', uid)
+            user_count = await conn.fetchval('SELECT COUNT(*) FROM user_settings WHERE subscribed=TRUE')
+        if (not row or not row["subscribed"]) and user_count >= 18:
+            await interaction.response.send_message("❌ No more than 18 users can be subscribed at a time.", ephemeral=True)
+            return
+        return await func(interaction, *args, **kwargs)
+    return wrapper
 
 
 # ---- Imports ----
@@ -25,6 +37,12 @@ intents = discord.Intents.default()
 intents.members = True
 
 class MyClient(discord.Client):
+
+
+# ---- User Limit Decorator ----
+
+# (Moved outside class definition for correct indentation)
+
     def __init__(self):
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
@@ -50,7 +68,8 @@ async def init_db():
                 s_id BIGINT,
                 updates_enabled BOOLEAN DEFAULT FALSE,
                 last_sent TEXT,
-                channel_id BIGINT
+                channel_id BIGINT,
+                subscribed BOOLEAN DEFAULT TRUE
             )
         ''')
 client = MyClient()
@@ -113,6 +132,7 @@ COUNTRY_CHOICES = {
 # ---- Slash Command: setcountry ----
 @client.tree.command(name="setcountry", description="Set your preferred country for job search")
 @discord.app_commands.describe(country="Choose a country code (e.g. us, in, ca)")
+@user_limit_check
 async def setcountry(interaction: discord.Interaction, country: str):
     country = country.lower()
     if country not in COUNTRY_CHOICES:
@@ -131,6 +151,7 @@ async def setcountry(interaction: discord.Interaction, country: str):
 
 # ---- Slash Command: showcountry ----
 @client.tree.command(name="showcountry", description="Show your currently selected country for job search")
+@user_limit_check
 async def showcountry(interaction: discord.Interaction):
     uid = interaction.user.id
     async with db_pool.acquire() as conn:
@@ -145,39 +166,43 @@ async def showcountry(interaction: discord.Interaction):
 
 # ---- Slash Commands ----
 @client.tree.command(name="unsubscribe", description="Unsubscribe from job updates and remove your settings")
+@user_limit_check
 async def unsubscribe(interaction: discord.Interaction):
     uid = interaction.user.id
     async with db_pool.acquire() as conn:
-        await conn.execute('DELETE FROM user_settings WHERE user_id=$1', uid)
+        await conn.execute('UPDATE user_settings SET subscribed=FALSE, updates_enabled=FALSE WHERE user_id=$1', uid)
     await interaction.response.send_message("You have been unsubscribed from job updates.", ephemeral=True)
 
 @client.tree.command(name="ping", description="Check if the bot is alive")
+@user_limit_check
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message("Pong!", ephemeral=True)
 
 @client.tree.command(name="setkeywords", description="Set keywords to track (comma-separated)")
 @discord.app_commands.describe(keywords="Enter keywords separated by commas, e.g. ai, ml, internship")
+@user_limit_check
 async def setkeywords(interaction: discord.Interaction, keywords: str):
     uid = interaction.user.id
     keyword_list = [k.strip() for k in keywords.split(",")]
     async with db_pool.acquire() as conn:
-        # Check if user is already registered
-        exists = await conn.fetchval('SELECT 1 FROM user_settings WHERE user_id=$1', uid)
-        # Count total unique users
-        user_count = await conn.fetchval('SELECT COUNT(*) FROM user_settings')
-        if not exists and user_count >= 18:
+        # Check if user is already registered and if they are currently subscribed
+        row = await conn.fetchrow('SELECT subscribed FROM user_settings WHERE user_id=$1', uid)
+        user_count = await conn.fetchval('SELECT COUNT(*) FROM user_settings WHERE subscribed=TRUE')
+        # If user is not currently subscribed and limit is reached, block resubscription
+        if (not row or not row["subscribed"]) and user_count >= 18:
             await interaction.response.send_message("❌ Sorry, the bot has reached the maximum number of users (18). Please try again later or ask someone to unsubscribe.", ephemeral=True)
             return
         await conn.execute('''
-            INSERT INTO user_settings (user_id, keywords)
-            VALUES ($1, $2)
-            ON CONFLICT (user_id) DO UPDATE SET keywords = $2
+            INSERT INTO user_settings (user_id, keywords, subscribed)
+            VALUES ($1, $2, TRUE)
+            ON CONFLICT (user_id) DO UPDATE SET keywords = $2, subscribed = TRUE
         ''', uid, keyword_list)
     msg = ("✅ Keywords saved (comma-separated, e.g. ai, ml, internship):\n" +
            "\n".join(f"• {k}" for k in keyword_list))
     await interaction.response.send_message(msg, ephemeral=True)
 
 @client.tree.command(name="showkeywords", description="Show your currently saved keywords")
+@user_limit_check
 async def showkeywords(interaction: discord.Interaction):
     uid = interaction.user.id
     async with db_pool.acquire() as conn:
@@ -189,6 +214,7 @@ async def showkeywords(interaction: discord.Interaction):
     await interaction.response.send_message("Your saved keywords:\n• " + "\n• ".join(keywords), ephemeral=True)
 
 @client.tree.command(name="clearkeywords", description="Clear your saved keywords")
+@user_limit_check
 async def clearkeywords(interaction: discord.Interaction):
     uid = interaction.user.id
     async with db_pool.acquire() as conn:
@@ -197,6 +223,7 @@ async def clearkeywords(interaction: discord.Interaction):
 
 @client.tree.command(name="setlocation", description="Set your preferred job location")
 @discord.app_commands.describe(location="City, State or 'Remote'")
+@user_limit_check
 async def setlocation(interaction: discord.Interaction, location: str):
     uid = interaction.user.id
     # Only take the first argument (before any comma or space)
@@ -210,6 +237,7 @@ async def setlocation(interaction: discord.Interaction, location: str):
     await interaction.response.send_message(f"📍 Location saved: **{loc}**", ephemeral=True)
 
 @client.tree.command(name="clearlocation", description="Clear your saved location")
+@user_limit_check
 async def clearlocation(interaction: discord.Interaction):
     uid = interaction.user.id
     async with db_pool.acquire() as conn:
@@ -217,6 +245,7 @@ async def clearlocation(interaction: discord.Interaction):
     await interaction.response.send_message("Your location has been cleared.", ephemeral=True)
 
 @client.tree.command(name="showlocation", description="Show your currently saved location")
+@user_limit_check
 async def showlocation(interaction: discord.Interaction):
     uid = interaction.user.id
     async with db_pool.acquire() as conn:
@@ -235,7 +264,7 @@ async def job_update_task():
         now = datetime.now(UTC)
         for guild in client.guilds:
             async with db_pool.acquire() as conn:
-                rows = await conn.fetch('SELECT user_id, keywords, location, last_sent FROM user_settings WHERE keywords IS NOT NULL AND updates_enabled=TRUE')
+                rows = await conn.fetch('SELECT user_id, keywords, location, last_sent FROM user_settings WHERE keywords IS NOT NULL AND updates_enabled=TRUE AND subscribed=TRUE')
             for row in rows:
                 last_sent_str = row["last_sent"]
                 last_sent = None
@@ -274,7 +303,10 @@ async def send_job_results(guild, user_id, keywords, location, days_limit=4):
     try:
         # Fetch channel_id and country from DB
         async with db_pool.acquire() as conn:
-            row = await conn.fetchrow('SELECT channel_id, country FROM user_settings WHERE user_id=$1', user_id)
+            row = await conn.fetchrow('SELECT channel_id, country, subscribed FROM user_settings WHERE user_id=$1', user_id)
+        if not row or not row.get("subscribed", True):
+            print(f"[INFO] User {user_id} is not subscribed. Skipping job delivery.")
+            return False
         channel_id = row["channel_id"] if row else None
         country = row["country"] if row and row["country"] else "us"
         channel = None
@@ -353,11 +385,13 @@ async def send_job_results(guild, user_id, keywords, location, days_limit=4):
 
 # ---- Slash Command: searchnow ----
 @client.tree.command(name="searchnow", description="Get your latest job results now!")
+@user_limit_check
 async def searchnow(interaction: discord.Interaction):
     uid = interaction.user.id
     async with db_pool.acquire() as conn:
-        row = await conn.fetchrow('SELECT keywords, location, channel_id, updates_enabled FROM user_settings WHERE user_id=$1', uid)
-    if not row or not row["keywords"]:
+        row = await conn.fetchrow('SELECT keywords, location, channel_id, updates_enabled, subscribed FROM user_settings WHERE user_id=$1', uid)
+        user_count = await conn.fetchval('SELECT COUNT(*) FROM user_settings WHERE subscribed=TRUE')
+    if not row or not row["keywords"] or not row.get("subscribed", True):
         await interaction.response.send_message(
             "You haven't set any keywords yet. Use /setkeywords first.\n\n"
             "Format: Enter keywords separated by commas, e.g. ai, ml, internship",
@@ -373,6 +407,11 @@ async def searchnow(interaction: discord.Interaction):
             "Only jobs posted within the last 4 days will be sent.",
             ephemeral=True)
         return
+    # Enforce strict 18-user limit for enabling updates (resubscription)
+    if not row["subscribed"] and user_count >= 18:
+        await interaction.response.send_message(
+            "❌ Sorry, the bot has reached the maximum number of users (18). Please try again later or ask someone to unsubscribe.", ephemeral=True)
+        return
     await interaction.response.defer(ephemeral=True)
     # Find the channel in any guild
     channel = None
@@ -386,10 +425,10 @@ async def searchnow(interaction: discord.Interaction):
         return
     success = await send_job_results(channel.guild, uid, row["keywords"], row["location"], 4)
     if success:
-        # Enable periodic updates for this user and set last_sent to now
+        # Enable periodic updates for this user and set last_sent to now, and resubscribe if needed
         now = datetime.now(UTC)
         async with db_pool.acquire() as conn:
-            await conn.execute('UPDATE user_settings SET updates_enabled=TRUE, last_sent=$1 WHERE user_id=$2', now.isoformat(), uid)
+            await conn.execute('UPDATE user_settings SET updates_enabled=TRUE, last_sent=$1, subscribed=TRUE WHERE user_id=$2', now.isoformat(), uid)
         await interaction.followup.send(
             "Done! You will now receive job results in your selected channel every 4 days (from now).\n"
             "Only jobs posted within the last 4 days will be sent.",
@@ -399,6 +438,7 @@ async def searchnow(interaction: discord.Interaction):
 # ---- Slash Command: setchannel ----
 @client.tree.command(name="setchannel", description="Set the channel where you want to receive job results")
 @discord.app_commands.describe(channel="Select a text channel")
+@user_limit_check
 async def setchannel(interaction: discord.Interaction, channel: discord.TextChannel):
     uid = interaction.user.id
     # Check bot permissions
@@ -415,6 +455,7 @@ async def setchannel(interaction: discord.Interaction, channel: discord.TextChan
 
 # ---- Slash Command: clearchannel ----
 @client.tree.command(name="clearchannel", description="Clear your selected job results channel")
+@user_limit_check
 async def clearchannel(interaction: discord.Interaction):
     uid = interaction.user.id
     async with db_pool.acquire() as conn:
@@ -423,6 +464,7 @@ async def clearchannel(interaction: discord.Interaction):
 
 # ---- Slash Command: showchannel ----
 @client.tree.command(name="showchannel", description="Show your currently selected job results channel")
+@user_limit_check
 async def showchannel(interaction: discord.Interaction):
     uid = interaction.user.id
     async with db_pool.acquire() as conn:
