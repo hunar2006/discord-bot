@@ -50,6 +50,7 @@ async def init_db():
                 days INT,
                 s_id BIGINT,
                 updates_enabled BOOLEAN DEFAULT FALSE,
+                last_sent TEXT,
                 PRIMARY KEY (guild_id, user_id)
             )
         ''')
@@ -241,16 +242,25 @@ async def showlocation(interaction: discord.Interaction):
 async def job_update_task():
     await client.wait_until_ready()
     while not client.is_closed():
+        now = datetime.now(UTC)
         for guild in client.guilds:
-            channel = next((c for c in guild.text_channels if c.permissions_for(guild.me).send_messages), None)
-            if not channel:
-                continue
             gid = guild.id
             async with db_pool.acquire() as conn:
-                rows = await conn.fetch('SELECT user_id, keywords, location FROM user_settings WHERE guild_id=$1 AND keywords IS NOT NULL AND updates_enabled=TRUE', gid)
+                rows = await conn.fetch('SELECT user_id, keywords, location, last_sent FROM user_settings WHERE guild_id=$1 AND keywords IS NOT NULL AND updates_enabled=TRUE', gid)
             for row in rows:
-                await send_job_results(guild, row["user_id"], row["keywords"], row["location"], 4)
-        await asyncio.sleep(4 * 24 * 60 * 60)
+                last_sent_str = row["last_sent"]
+                last_sent = None
+                if last_sent_str:
+                    try:
+                        last_sent = datetime.fromisoformat(last_sent_str)
+                    except Exception:
+                        last_sent = None
+                if not last_sent or (now - last_sent).total_seconds() >= 4 * 24 * 60 * 60:
+                    success = await send_job_results(guild, row["user_id"], row["keywords"], row["location"], 4)
+                    if success:
+                        async with db_pool.acquire() as conn:
+                            await conn.execute('UPDATE user_settings SET last_sent=$1 WHERE guild_id=$2 AND user_id=$3', now.isoformat(), gid, row["user_id"])
+        await asyncio.sleep(60 * 10)  # Check every 10 minutes
 
 # ---- Helper: Send Job Results ----
 async def send_job_results(guild, user_id, keywords, location, days_limit=4):
@@ -355,11 +365,12 @@ async def searchnow(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     success = await send_job_results(interaction.guild, uid, row["keywords"], row["location"], 4)
     if success:
-        # Enable periodic updates for this user
+        # Enable periodic updates for this user and set last_sent to now
+        now = datetime.now(UTC)
         async with db_pool.acquire() as conn:
-            await conn.execute('UPDATE user_settings SET updates_enabled=TRUE WHERE guild_id=$1 AND user_id=$2', gid, uid)
+            await conn.execute('UPDATE user_settings SET updates_enabled=TRUE, last_sent=$1 WHERE guild_id=$2 AND user_id=$3', now.isoformat(), gid, uid)
         await interaction.followup.send(
-            "Done! You will now receive job results in your selected channel every 4 days.\n"
+            "Done! You will now receive job results in your selected channel every 4 days (from now).\n"
             "Only jobs posted within the last 4 days will be sent.",
             ephemeral=True)
     else:
