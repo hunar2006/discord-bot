@@ -46,12 +46,102 @@ async def init_db():
                 user_id BIGINT,
                 keywords TEXT[],
                 location TEXT,
+                country TEXT,
                 days INT,
                 s_id BIGINT,
                 updates_enabled BOOLEAN DEFAULT FALSE,
                 PRIMARY KEY (guild_id, user_id)
             )
         ''')
+# ---- Supported Countries ----
+COUNTRY_CHOICES = {
+    'us': 'United States',
+    'in': 'India',
+    'ca': 'Canada',
+    'gb': 'United Kingdom',
+    'au': 'Australia',
+    'de': 'Germany',
+    'fr': 'France',
+    'sg': 'Singapore',
+    'jp': 'Japan',
+    'za': 'South Africa',
+    'br': 'Brazil',
+    'ae': 'United Arab Emirates',
+    'it': 'Italy',
+    'es': 'Spain',
+    'nl': 'Netherlands',
+    'se': 'Sweden',
+    'ch': 'Switzerland',
+    'mx': 'Mexico',
+    'ie': 'Ireland',
+    'ru': 'Russia',
+    'cn': 'China',
+    'kr': 'South Korea',
+    'hk': 'Hong Kong',
+    'fi': 'Finland',
+    'be': 'Belgium',
+    'pl': 'Poland',
+    'tr': 'Turkey',
+    'ar': 'Argentina',
+    'dk': 'Denmark',
+    'no': 'Norway',
+    'nz': 'New Zealand',
+    'pt': 'Portugal',
+    'cz': 'Czech Republic',
+    'il': 'Israel',
+    'my': 'Malaysia',
+    'th': 'Thailand',
+    'ph': 'Philippines',
+    'id': 'Indonesia',
+    'sa': 'Saudi Arabia',
+    'cl': 'Chile',
+    'co': 'Colombia',
+    'at': 'Austria',
+    'hu': 'Hungary',
+    'gr': 'Greece',
+    'ro': 'Romania',
+    'ua': 'Ukraine',
+    'sk': 'Slovakia',
+    'bg': 'Bulgaria',
+    'hr': 'Croatia',
+    'si': 'Slovenia',
+    'lt': 'Lithuania',
+    'lv': 'Latvia',
+    'ee': 'Estonia',
+}
+# ---- Slash Command: setcountry ----
+@client.tree.command(name="setcountry", description="Set your preferred country for job search")
+@discord.app_commands.describe(country="Choose a country code (e.g. us, in, ca)")
+async def setcountry(interaction: discord.Interaction, country: str):
+    country = country.lower()
+    if country not in COUNTRY_CHOICES:
+        country_list = ", ".join(f"{k} ({v})" for k, v in COUNTRY_CHOICES.items())
+        await interaction.response.send_message(
+            f"❌ Invalid country code. Please choose from the following:\n{country_list}", ephemeral=True)
+        return
+    gid = interaction.guild.id
+    uid = interaction.user.id
+    async with db_pool.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO user_settings (guild_id, user_id, country)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (guild_id, user_id) DO UPDATE SET country = $3
+        ''', gid, uid, country)
+    await interaction.response.send_message(f"🌍 Country set to: **{COUNTRY_CHOICES[country]}** ({country})", ephemeral=True)
+
+# ---- Slash Command: showcountry ----
+@client.tree.command(name="showcountry", description="Show your currently selected country for job search")
+async def showcountry(interaction: discord.Interaction):
+    gid = interaction.guild.id
+    uid = interaction.user.id
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow('SELECT country FROM user_settings WHERE guild_id=$1 AND user_id=$2', gid, uid)
+    if not row or not row["country"]:
+        await interaction.response.send_message("You haven't set a country yet. Use /setcountry to pick one.", ephemeral=True)
+        return
+    code = row["country"]
+    name = COUNTRY_CHOICES.get(code, code)
+    await interaction.response.send_message(f"Your job search country: **{name}** ({code})", ephemeral=True)
 
 client = MyClient()
 
@@ -75,6 +165,13 @@ async def setkeywords(interaction: discord.Interaction, keywords: str):
     uid = interaction.user.id
     keyword_list = [k.strip() for k in keywords.split(",")]
     async with db_pool.acquire() as conn:
+        # Check if user is already registered
+        exists = await conn.fetchval('SELECT 1 FROM user_settings WHERE guild_id=$1 AND user_id=$2', gid, uid)
+        # Count total unique users
+        user_count = await conn.fetchval('SELECT COUNT(*) FROM user_settings')
+        if not exists and user_count >= 18:
+            await interaction.response.send_message("❌ Sorry, the bot has reached the maximum number of users (18). Please try again later or ask someone to unsubscribe.", ephemeral=True)
+            return
         await conn.execute('''
             INSERT INTO user_settings (guild_id, user_id, keywords)
             VALUES ($1, $2, $3)
@@ -158,10 +255,11 @@ async def job_update_task():
 # ---- Helper: Send Job Results ----
 async def send_job_results(guild, user_id, keywords, location, days_limit=4):
     try:
-        # Fetch channel_id from DB
+        # Fetch channel_id and country from DB
         async with db_pool.acquire() as conn:
-            row = await conn.fetchrow('SELECT channel_id FROM user_settings WHERE guild_id=$1 AND user_id=$2', guild.id, user_id)
+            row = await conn.fetchrow('SELECT channel_id, country FROM user_settings WHERE guild_id=$1 AND user_id=$2', guild.id, user_id)
         channel_id = row["channel_id"] if row else None
+        country = row["country"] if row and row["country"] else "us"
         channel = None
         if channel_id:
             channel = guild.get_channel(channel_id)
@@ -173,7 +271,7 @@ async def send_job_results(guild, user_id, keywords, location, days_limit=4):
         days_limit = 4
         query_parts = keywords + ([location] if location else [])
         query = "+".join(query_parts)
-        url = f"https://jsearch.p.rapidapi.com/search?query={query}&page=1&num_pages=1&country=us"
+        url = f"https://jsearch.p.rapidapi.com/search?query={query}&page=1&num_pages=1&country={country}"
         headers = {
             "X-RapidAPI-Key": RAPIDAPI_KEY,
             "X-RapidAPI-Host": "jsearch.p.rapidapi.com"
@@ -214,12 +312,12 @@ async def send_job_results(guild, user_id, keywords, location, days_limit=4):
                 if not recent_jobs:
                     print(f"[INFO] No recent jobs found for user {user_id}")
                     return True
-                msg = "Top Recent Job Results:\n"
+                msg = f"<@{user_id}> Top Recent Job Results:\n"
                 for job in recent_jobs:
                     # Use plain links in < > to suppress Discord embeds
                     msg += f"• {job['job_title']} at {job['employer_name']}: <{job['job_apply_link']}>\n"
                 try:
-                    await channel.send(f"<@{user_id}> {msg}")
+                    await channel.send(msg)
                 except discord.Forbidden:
                     print(f"[ERROR] Cannot send message in channel {channel.id} for user {user_id} (forbidden)")
                     return False
