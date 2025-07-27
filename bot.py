@@ -1,5 +1,18 @@
-# ---- User Limit Decorator ----
 def user_limit_check(func):
+    async def wrapper(interaction, *args, **kwargs):
+        uid = interaction.user.id
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow('SELECT subscribed FROM user_settings WHERE user_id=$1', uid)
+            user_count = await conn.fetchval('SELECT COUNT(*) FROM user_settings WHERE subscribed=TRUE')
+        if (not row or not row["subscribed"]) and user_count >= 18:
+            await interaction.response.send_message("❌ No more than 18 users can be subscribed at a time.", ephemeral=True)
+            return
+        return await func(interaction, *args, **kwargs)
+    return wrapper
+# ---- User Limit Decorator ----
+import functools
+def user_limit_check(func):
+    @functools.wraps(func)
     async def wrapper(interaction, *args, **kwargs):
         uid = interaction.user.id
         async with db_pool.acquire() as conn:
