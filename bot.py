@@ -336,10 +336,11 @@ async def send_job_results(guild, user_id, keywords, location, days_limit=4):
         if not channel or not channel.permissions_for(channel.guild.me).send_messages:
             print(f"[ERROR] No valid channel set for user {user_id}")
             return False
-        keywords = keywords or []
+        # Convert keywords string to list for concatenation
+        keyword_list = [k.strip() for k in (keywords or "").split(",") if k.strip()]
         location = location or ""
         days_limit = 4
-        query_parts = keywords + ([location] if location else [])
+        query_parts = keyword_list + ([location] if location else [])
         query = "+".join(query_parts)
         url = f"https://jsearch.p.rapidapi.com/search?query={query}&page=1&num_pages=1&country={country}"
         headers = {
