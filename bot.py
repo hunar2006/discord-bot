@@ -1,14 +1,3 @@
-def user_limit_check(func):
-    async def wrapper(interaction, *args, **kwargs):
-        uid = interaction.user.id
-        async with db_pool.acquire() as conn:
-            row = await conn.fetchrow('SELECT subscribed FROM user_settings WHERE user_id=$1', uid)
-            user_count = await conn.fetchval('SELECT COUNT(*) FROM user_settings WHERE subscribed=TRUE')
-        if (not row or not row["subscribed"]) and user_count >= 18:
-            await interaction.response.send_message("❌ No more than 18 users can be subscribed at a time.", ephemeral=True)
-            return
-        return await func(interaction, *args, **kwargs)
-    return wrapper
 # ---- User Limit Decorator ----
 import functools
 def user_limit_check(func):
@@ -66,6 +55,8 @@ class MyClient(discord.Client):
 
     async def on_ready(self):
         print(f"✅ Logged in as {self.user} (ID: {self.user.id})")
+        # Start the background job task
+        self.loop.create_task(job_update_task())
 
 async def init_db():
     global db_pool
@@ -278,40 +269,42 @@ async def job_update_task():
     await client.wait_until_ready()
     while not client.is_closed():
         now = datetime.now(UTC)
-        for guild in client.guilds:
-            async with db_pool.acquire() as conn:
-                rows = await conn.fetch('SELECT user_id, keywords, location, last_sent FROM user_settings WHERE keywords IS NOT NULL AND updates_enabled=TRUE AND subscribed=TRUE')
-            for row in rows:
-                last_sent_str = row["last_sent"]
-                last_sent = None
-                if last_sent_str:
-                    try:
-                        last_sent = datetime.fromisoformat(last_sent_str)
-                    except Exception:
-                        last_sent = None
-                if not last_sent or (now - last_sent).total_seconds() >= 4 * 24 * 60 * 60:
-                    # Find the user's channel and guild
-                    user_id = row["user_id"]
-                    channel_id = None
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch('SELECT user_id, keywords, location, last_sent FROM user_settings WHERE keywords IS NOT NULL AND updates_enabled=TRUE AND subscribed=TRUE')
+        for row in rows:
+            last_sent_str = row["last_sent"]
+            last_sent = None
+            if last_sent_str:
+                try:
+                    last_sent = datetime.fromisoformat(last_sent_str)
+                    # Make sure last_sent is timezone-aware (UTC)
+                    if last_sent.tzinfo is None:
+                        last_sent = last_sent.replace(tzinfo=UTC)
+                except Exception:
+                    last_sent = None
+            if not last_sent or (now - last_sent).total_seconds() >= 4 * 24 * 60 * 60:
+                # Find the user's channel and guild
+                user_id = row["user_id"]
+                channel_id = None
+                for g in client.guilds:
+                    member = g.get_member(user_id)
+                    if member:
+                        async with db_pool.acquire() as conn:
+                            ch_row = await conn.fetchrow('SELECT channel_id FROM user_settings WHERE user_id=$1', user_id)
+                        channel_id = ch_row["channel_id"] if ch_row else None
+                        break
+                if channel_id:
+                    channel = None
                     for g in client.guilds:
-                        member = g.get_member(user_id)
-                        if member:
-                            async with db_pool.acquire() as conn:
-                                ch_row = await conn.fetchrow('SELECT channel_id FROM user_settings WHERE user_id=$1', user_id)
-                            channel_id = ch_row["channel_id"] if ch_row else None
+                        ch = g.get_channel(channel_id)
+                        if ch:
+                            channel = ch
                             break
-                    if channel_id:
-                        channel = None
-                        for g in client.guilds:
-                            ch = g.get_channel(channel_id)
-                            if ch:
-                                channel = ch
-                                break
-                        if channel:
-                            success = await send_job_results(channel.guild, user_id, row["keywords"], row["location"], 4)
-                            if success:
-                                async with db_pool.acquire() as conn:
-                                    await conn.execute('UPDATE user_settings SET last_sent=$1 WHERE user_id=$2', now.isoformat(), user_id)
+                    if channel:
+                        success = await send_job_results(channel.guild, user_id, row["keywords"], row["location"], 4)
+                        if success:
+                            async with db_pool.acquire() as conn:
+                                await conn.execute('UPDATE user_settings SET last_sent=$1 WHERE user_id=$2', now.isoformat(), user_id)
         await asyncio.sleep(60 * 10)  # Check every 10 minutes
 
 # ---- Helper: Send Job Results ----
@@ -499,12 +492,6 @@ async def showchannel(interaction: discord.Interaction):
         await interaction.response.send_message("The previously set channel no longer exists. Please set a new one with /setchannel.", ephemeral=True)
         return
     await interaction.response.send_message(f"Your job results will be sent to: {channel.mention}", ephemeral=True)
-
-# ---- on_ready Event ----
-@client.event
-async def on_ready():
-    print(f"✅ Logged in as {client.user} (ID: {client.user.id})")
-    client.loop.create_task(job_update_task())
 
 # ---- Run Bot ----
 client.run(os.environ.get("DISCORD_TOKEN"))
